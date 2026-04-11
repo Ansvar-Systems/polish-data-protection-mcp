@@ -1,0 +1,106 @@
+name: Check Data Freshness
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check-freshness:
+    name: Check UODO data freshness
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check data freshness
+        id: freshness
+        run: |
+          LAST_RUN=$(node -e "
+            const fs = require('fs');
+            try {
+              const state = JSON.parse(fs.readFileSync('data/ingest-state.json', 'utf8'));
+              const lastRun = state.lastRun ? new Date(state.lastRun) : null;
+              const ageDays = lastRun ? Math.floor((Date.now() - lastRun.getTime()) / 86400000) : null;
+              console.log(JSON.stringify({
+                lastRun: state.lastRun ?? null,
+                decisionsIngested: state.decisionsIngested ?? 0,
+                guidelinesIngested: state.guidelinesIngested ?? 0,
+                ageDays,
+                isStale: ageDays === null || ageDays > 7
+              }));
+            } catch (e) {
+              console.log(JSON.stringify({ lastRun: null, ageDays: null, isStale: true, error: e.message }));
+            }
+          ")
+          echo "result=$LAST_RUN" >> "$GITHUB_OUTPUT"
+          IS_STALE=$(echo "$LAST_RUN" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).isStale)")
+          echo "is_stale=$IS_STALE" >> "$GITHUB_OUTPUT"
+
+      - name: Write job summary
+        run: |
+          RESULT='${{ steps.freshness.outputs.result }}'
+          echo "## UODO Data Freshness Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Last Run | $(echo "$RESULT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).lastRun ?? 'never')")" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Age (days) | $(echo "$RESULT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).ageDays ?? 'unknown')")" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Decisions Ingested | $(echo "$RESULT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).decisionsIngested ?? 0)")" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Guidelines Ingested | $(echo "$RESULT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).guidelinesIngested ?? 0)")" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stale? | ${{ steps.freshness.outputs.is_stale }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue if stale
+        if: steps.freshness.outputs.is_stale == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = JSON.parse('${{ steps.freshness.outputs.result }}');
+            const title = `[Data Freshness] UODO data is stale (last run: ${result.lastRun ?? 'never'})`;
+            const body = [
+              '## UODO Data Freshness Alert',
+              '',
+              `The UODO database has not been updated recently.`,
+              '',
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| Last Run | ${result.lastRun ?? 'never'} |`,
+              `| Age (days) | ${result.ageDays ?? 'unknown'} |`,
+              `| Decisions Ingested | ${result.decisionsIngested ?? 0} |`,
+              `| Guidelines Ingested | ${result.guidelinesIngested ?? 0} |`,
+              '',
+              '**Action required:** Run `npm run ingest` or trigger the ingest workflow to refresh the database.',
+            ].join('\n');
+
+            // Check for existing open issue with same title prefix
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'data-freshness',
+            });
+
+            const existing = issues.data.find(i => i.title.startsWith('[Data Freshness]'));
+            if (!existing) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['data-freshness'],
+              });
+            }

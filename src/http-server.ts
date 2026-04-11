@@ -30,6 +30,8 @@ import {
   getGuideline,
   listTopics,
 } from "./db.js";
+import { buildCitation } from "./citation.js";
+import { responseMeta } from "./meta.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -72,7 +74,7 @@ const TOOLS = [
   {
     name: "pl_dp_get_decision",
     description:
-      "Get a specific UODO decision by reference number (e.g., 'UODO-2022-001').",
+      "Get a specific UODO decision by reference number (e.g., 'ZSPR.421.1.2019', 'DKN.5112.1.2019').",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -114,6 +116,16 @@ const TOOLS = [
   {
     name: "pl_dp_list_topics",
     description: "List all covered data protection topics with Polish and English names.",
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "pl_dp_list_sources",
+    description: "List all data sources used by this MCP server, including official UODO publication portals and provenance information.",
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "pl_dp_check_data_freshness",
+    description: "Check when the database was last updated, how many decisions and guidelines are ingested, and whether the data may be stale.",
     inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
@@ -163,14 +175,22 @@ function createMcpServer(): Server {
     const { name, arguments: args = {} } = request.params;
 
     function textContent(data: unknown) {
+      const payload = typeof data === "object" && data !== null
+        ? { ...data as Record<string, unknown>, _meta: responseMeta() }
+        : { data, _meta: responseMeta() };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
       };
     }
 
-    function errorContent(message: string) {
+    function errorContent(message: string, errorType = "tool_error") {
+      const payload = {
+        error: message,
+        _error_type: errorType,
+        _meta: responseMeta(),
+      };
       return {
-        content: [{ type: "text" as const, text: message }],
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
         isError: true as const,
       };
     }
@@ -185,16 +205,34 @@ function createMcpServer(): Server {
             topic: parsed.topic,
             limit: parsed.limit,
           });
-          return textContent({ results, count: results.length });
+          const resultsWithCitation = results.map((d) => ({
+            ...d,
+            _citation: buildCitation(
+              String(d.reference),
+              String(d.title ?? d.reference),
+              "pl_dp_get_decision",
+              { reference: d.reference },
+            ),
+          }));
+          return textContent({ results: resultsWithCitation, count: results.length });
         }
 
         case "pl_dp_get_decision": {
           const parsed = GetDecisionArgs.parse(args);
           const decision = getDecision(parsed.reference);
           if (!decision) {
-            return errorContent(`Decision not found: ${parsed.reference}`);
+            return errorContent(`Decision not found: ${parsed.reference}`, "not_found");
           }
-          return textContent(decision);
+          const d = decision as unknown as Record<string, unknown>;
+          return textContent({
+            ...d,
+            _citation: buildCitation(
+              String(d.reference ?? parsed.reference),
+              String(d.title ?? d.reference ?? parsed.reference),
+              "pl_dp_get_decision",
+              { reference: parsed.reference },
+            ),
+          });
         }
 
         case "pl_dp_search_guidelines": {
@@ -205,16 +243,34 @@ function createMcpServer(): Server {
             topic: parsed.topic,
             limit: parsed.limit,
           });
-          return textContent({ results, count: results.length });
+          const resultsWithCitation = results.map((g) => ({
+            ...g,
+            _citation: buildCitation(
+              String(g.reference ?? g.title ?? `guideline-${g.id}`),
+              String(g.title ?? `Guideline ${g.id}`),
+              "pl_dp_get_guideline",
+              { id: String(g.id) },
+            ),
+          }));
+          return textContent({ results: resultsWithCitation, count: results.length });
         }
 
         case "pl_dp_get_guideline": {
           const parsed = GetGuidelineArgs.parse(args);
           const guideline = getGuideline(parsed.id);
           if (!guideline) {
-            return errorContent(`Guideline not found: id=${parsed.id}`);
+            return errorContent(`Guideline not found: id=${parsed.id}`, "not_found");
           }
-          return textContent(guideline);
+          const g = guideline as unknown as Record<string, unknown>;
+          return textContent({
+            ...g,
+            _citation: buildCitation(
+              String(g.reference ?? g.title ?? `guideline-${parsed.id}`),
+              String(g.title ?? `Guideline ${parsed.id}`),
+              "pl_dp_get_guideline",
+              { id: String(parsed.id) },
+            ),
+          });
         }
 
         case "pl_dp_list_topics": {
@@ -222,23 +278,77 @@ function createMcpServer(): Server {
           return textContent({ topics, count: topics.length });
         }
 
+        case "pl_dp_list_sources": {
+          return textContent({
+            sources: [
+              {
+                id: "uodo_decisions",
+                name: "UODO Decisions Database",
+                authority: "Urząd Ochrony Danych Osobowych (UODO)",
+                url: "https://uodo.gov.pl/pl/p/decyzje",
+                description: "Administrative decisions, sanctions, and orders issued by the Polish Data Protection Authority",
+                language: "pl",
+                coverage: "decisions, sanctions, administrative orders",
+              },
+              {
+                id: "uodo_guidelines",
+                name: "UODO Guidance Portal",
+                authority: "Urząd Ochrony Danych Osobowych (UODO)",
+                url: "https://uodo.gov.pl/pl/p/wytyczne",
+                description: "Official guidelines, opinions, recommendations, and FAQs published by UODO",
+                language: "pl",
+                coverage: "guidelines, opinions, recommendations, FAQs",
+              },
+            ],
+            count: 2,
+          });
+        }
+
+        case "pl_dp_check_data_freshness": {
+          let state: {
+            lastRun?: string;
+            decisionsIngested?: number;
+            guidelinesIngested?: number;
+            processedUrls?: string[];
+            errors?: string[];
+          } = {};
+          try {
+            state = JSON.parse(
+              readFileSync(join(__dirname, "..", "data", "ingest-state.json"), "utf8"),
+            ) as typeof state;
+          } catch {
+            // ingest-state.json missing or unreadable
+          }
+          const lastRun = state.lastRun ? new Date(state.lastRun) : null;
+          const ageMs = lastRun ? Date.now() - lastRun.getTime() : null;
+          const ageDays = ageMs !== null ? Math.floor(ageMs / 86_400_000) : null;
+          return textContent({
+            last_run: state.lastRun ?? null,
+            decisions_ingested: state.decisionsIngested ?? 0,
+            guidelines_ingested: state.guidelinesIngested ?? 0,
+            age_days: ageDays,
+            is_stale: ageDays !== null ? ageDays > 7 : true,
+            errors: state.errors ?? [],
+          });
+        }
+
         case "pl_dp_about": {
           return textContent({
             name: SERVER_NAME,
             version: pkgVersion,
             description:
-              "UODO (Hellenic Data Protection Authority) MCP server. Provides access to Polish data protection authority decisions, sanctions, reprimands, and official guidance documents.",
+              "UODO (Urząd Ochrony Danych Osobowych — Polish Data Protection Authority) MCP server. Provides access to Polish data protection authority decisions, sanctions, administrative orders, and official guidance documents.",
             data_source: "UODO (https://uodo.gov.pl/)",
             tools: TOOLS.map((t) => ({ name: t.name, description: t.description })),
           });
         }
 
         default:
-          return errorContent(`Unknown tool: ${name}`);
+          return errorContent(`Unknown tool: ${name}`, "unknown_tool");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return errorContent(`Error executing ${name}: ${message}`);
+      return errorContent(`Error executing ${name}: ${message}`, "execution_error");
     }
   });
 

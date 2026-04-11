@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "mcp": "eu.ansvar/polish-data-protection-mcp",
+  "authority": "UODO (Urząd Ochrony Danych Osobowych)",
+  "jurisdiction": "PL",
+  "updated": "2026-04-11",
+  "corpora": [
+    {
+      "id": "uodo_decisions",
+      "name": "UODO Decisions",
+      "source_url": "https://uodo.gov.pl/pl/p/decyzje",
+      "language": "pl",
+      "types": ["sanction", "decision", "order", "opinion"],
+      "coverage_start": "2018-05-25",
+      "coverage_end": null,
+      "completeness": "partial",
+      "notes": "GDPR-era decisions (post-2018). Pre-GDPR GIODO decisions excluded."
+    },
+    {
+      "id": "uodo_guidelines",
+      "name": "UODO Guidelines and Guidance",
+      "source_url": "https://uodo.gov.pl/pl/p/wytyczne",
+      "language": "pl",
+      "types": ["guideline", "opinion", "recommendation", "FAQ"],
+      "coverage_start": "2018-05-25",
+      "coverage_end": null,
+      "completeness": "partial",
+      "notes": "Official UODO guidance documents, opinions, and recommendations."
+    }
+  ],
+  "topics": [
+    { "id": "consent", "name_pl": "Zgoda", "name_en": "Consent" },
+    { "id": "cookies", "name_pl": "Pliki cookie", "name_en": "Cookies" },
+    { "id": "transfers", "name_pl": "Przekazywanie danych", "name_en": "International transfers" },
+    { "id": "dpia", "name_pl": "Ocena skutków", "name_en": "DPIA" },
+    { "id": "breach", "name_pl": "Naruszenia", "name_en": "Breach notification" },
+    { "id": "privacy_by_design", "name_pl": "Prywatność w fazie projektowania", "name_en": "Privacy by design" },
+    { "id": "employee_monitoring", "name_pl": "Monitoring pracowników", "name_en": "Employee monitoring" },
+    { "id": "health_data", "name_pl": "Dane dotyczące zdrowia", "name_en": "Health data" },
+    { "id": "children", "name_pl": "Dzieci", "name_en": "Children's data" }
+  ]
+}
