@@ -27,6 +27,7 @@ import {
   listTopics,
 } from "./db.js";
 import { buildCitation } from "./citation.js";
+import { responseMeta } from "./meta.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -143,6 +144,26 @@ const TOOLS = [
     },
   },
   {
+    name: "pl_dp_list_sources",
+    description:
+      "List all data sources used by this MCP server, including official UODO publication portals and provenance information.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "pl_dp_check_data_freshness",
+    description:
+      "Check when the database was last updated, how many decisions and guidelines are ingested, and whether the data may be stale.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: "pl_dp_about",
     description: "Return metadata about this MCP server: version, data source, coverage, and tool list.",
     inputSchema: {
@@ -180,16 +201,24 @@ const GetGuidelineArgs = z.object({
 // --- Helper ------------------------------------------------------------------
 
 function textContent(data: unknown) {
+  const payload = typeof data === "object" && data !== null
+    ? { ...data as Record<string, unknown>, _meta: responseMeta() }
+    : { data, _meta: responseMeta() };
   return {
     content: [
-      { type: "text" as const, text: JSON.stringify(data, null, 2) },
+      { type: "text" as const, text: JSON.stringify(payload, null, 2) },
     ],
   };
 }
 
-function errorContent(message: string) {
+function errorContent(message: string, errorType = "tool_error") {
+  const payload = {
+    error: message,
+    _error_type: errorType,
+    _meta: responseMeta(),
+  };
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
     isError: true as const,
   };
 }
@@ -218,16 +247,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           topic: parsed.topic,
           limit: parsed.limit,
         });
-        return textContent({ results, count: results.length });
+        const resultsWithCitation = results.map((d) => ({
+          ...d,
+          _citation: buildCitation(
+            String(d.reference),
+            String(d.title ?? d.reference),
+            "pl_dp_get_decision",
+            { reference: d.reference },
+          ),
+        }));
+        return textContent({ results: resultsWithCitation, count: results.length });
       }
 
       case "pl_dp_get_decision": {
         const parsed = GetDecisionArgs.parse(args);
         const decision = getDecision(parsed.reference);
         if (!decision) {
-          return errorContent(`Decision not found: ${parsed.reference}`);
+          return errorContent(`Decision not found: ${parsed.reference}`, "not_found");
         }
-        const d = decision as Record<string, unknown>;
+        const d = decision as unknown as Record<string, unknown>;
         return textContent({
           ...d,
           _citation: buildCitation(
@@ -247,16 +285,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           topic: parsed.topic,
           limit: parsed.limit,
         });
-        return textContent({ results, count: results.length });
+        const resultsWithCitation = results.map((g) => ({
+          ...g,
+          _citation: buildCitation(
+            String(g.reference ?? g.title ?? `guideline-${g.id}`),
+            String(g.title ?? `Guideline ${g.id}`),
+            "pl_dp_get_guideline",
+            { id: String(g.id) },
+          ),
+        }));
+        return textContent({ results: resultsWithCitation, count: results.length });
       }
 
       case "pl_dp_get_guideline": {
         const parsed = GetGuidelineArgs.parse(args);
         const guideline = getGuideline(parsed.id);
         if (!guideline) {
-          return errorContent(`Guideline not found: id=${parsed.id}`);
+          return errorContent(`Guideline not found: id=${parsed.id}`, "not_found");
         }
-        const g = guideline as Record<string, unknown>;
+        const g = guideline as unknown as Record<string, unknown>;
         return textContent({
           ...g,
           _citation: buildCitation(
@@ -271,6 +318,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "pl_dp_list_topics": {
         const topics = listTopics();
         return textContent({ topics, count: topics.length });
+      }
+
+      case "pl_dp_list_sources": {
+        return textContent({
+          sources: [
+            {
+              id: "uodo_decisions",
+              name: "UODO Decisions Database",
+              authority: "Urząd Ochrony Danych Osobowych (UODO)",
+              url: "https://uodo.gov.pl/pl/p/decyzje",
+              description: "Administrative decisions, sanctions, and orders issued by the Polish Data Protection Authority",
+              language: "pl",
+              coverage: "decisions, sanctions, administrative orders",
+            },
+            {
+              id: "uodo_guidelines",
+              name: "UODO Guidance Portal",
+              authority: "Urząd Ochrony Danych Osobowych (UODO)",
+              url: "https://uodo.gov.pl/pl/p/wytyczne",
+              description: "Official guidelines, opinions, recommendations, and FAQs published by UODO",
+              language: "pl",
+              coverage: "guidelines, opinions, recommendations, FAQs",
+            },
+          ],
+          count: 2,
+        });
+      }
+
+      case "pl_dp_check_data_freshness": {
+        let state: {
+          lastRun?: string;
+          decisionsIngested?: number;
+          guidelinesIngested?: number;
+          processedUrls?: string[];
+          errors?: string[];
+        } = {};
+        try {
+          const { readFileSync: rfs } = await import("node:fs");
+          const { join: pjoin } = await import("node:path");
+          state = JSON.parse(
+            rfs(pjoin(__dirname, "..", "data", "ingest-state.json"), "utf8"),
+          ) as typeof state;
+        } catch {
+          // ingest-state.json missing or unreadable
+        }
+        const lastRun = state.lastRun ? new Date(state.lastRun) : null;
+        const ageMs = lastRun ? Date.now() - lastRun.getTime() : null;
+        const ageDays = ageMs !== null ? Math.floor(ageMs / 86_400_000) : null;
+        return textContent({
+          last_run: state.lastRun ?? null,
+          decisions_ingested: state.decisionsIngested ?? 0,
+          guidelines_ingested: state.guidelinesIngested ?? 0,
+          age_days: ageDays,
+          is_stale: ageDays !== null ? ageDays > 7 : true,
+          errors: state.errors ?? [],
+        });
       }
 
       case "pl_dp_about": {
@@ -290,11 +393,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       default:
-        return errorContent(`Unknown tool: ${name}`);
+        return errorContent(`Unknown tool: ${name}`, "unknown_tool");
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return errorContent(`Error executing ${name}: ${message}`);
+    return errorContent(`Error executing ${name}: ${message}`, "execution_error");
   }
 });
 

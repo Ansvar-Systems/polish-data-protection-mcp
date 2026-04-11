@@ -1,9 +1,9 @@
 /**
- * SQLite database access layer for the HDPA MCP server.
+ * SQLite database access layer for the UODO MCP server.
  *
  * Schema:
- *   - decisions    — HDPA decisions, sanctions, and reprimands
- *   - guidelines   — HDPA guidance documents, opinions, and recommendations
+ *   - decisions    — UODO decisions, sanctions, and administrative orders
+ *   - guidelines   — UODO guidance documents, opinions, and recommendations
  *   - topics       — controlled vocabulary for data protection topics
  *
  * FTS5 virtual tables back full-text search on decisions and guidelines.

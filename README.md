@@ -4,7 +4,7 @@
 
 [![npm version](https://badge.fury.io/js/%40ansvar%2Fpolish-data-protection-mcp.svg)](https://www.npmjs.com/package/@ansvar/polish-data-protection-mcp)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![CI](https://github.com/Ansvar-Systems/polish-data-protection-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Ansvar-Systems/polish-data-protection-mcp/actions/workflows/ci.yml)
+[![Build](https://github.com/Ansvar-Systems/polish-data-protection-mcp/actions/workflows/ghcr-build.yml/badge.svg)](https://github.com/Ansvar-Systems/polish-data-protection-mcp/actions/workflows/ghcr-build.yml)
 
 Query Polish data protection data -- regulations, decisions, and requirements from UODO (Personal Data Protection Office) -- directly from Claude, Cursor, or any MCP-compatible client.
 
